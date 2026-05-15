@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Stems — Browser AI Mixer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- BACKGROUND GRID -->
+  <div class="bg-grid"></div>
+  <div class="scanlines"></div>
+
+  <div id="app">
+
+    <!-- HEADER -->
+    <header>
+      <div class="logo">
+        <div class="logo-text">Ste<span>ms</span></div>
+        <div class="logo-sub">Browser AI Mixer</div>
+      </div>
+      <div id="spotify-area">
+        <button id="spotify-btn" class="btn-spotify">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+          Connect Spotify
+        </button>
+        <div id="spotify-status" class="hidden">
+          <span class="dot-green"></span>
+          <span id="spotify-user">Connected</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main>
+
+      <!-- UPLOAD ZONE -->
+      <section id="upload-section">
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-inner">
+            <div class="drop-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
+            </div>
+            <p class="drop-title">Drop an MP3 here</p>
+            <p class="drop-sub">or tap to browse your files</p>
+            <input type="file" id="file-input" accept=".mp3,audio/*" />
+            <button class="btn-upload" onclick="document.getElementById('file-input').click()">Choose File</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- MODEL LOAD PROGRESS -->
+      <section id="model-section" class="hidden">
+        <div class="progress-block">
+          <div class="progress-label">
+            <span>Loading AI Model</span>
+            <span id="model-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="model-bar"></div>
+          </div>
+          <p class="progress-note" id="model-note">Fetching model weights... (cached after first load)</p>
+        </div>
+      </section>
+
+      <!-- SEPARATION PROGRESS -->
+      <section id="separation-section" class="hidden">
+        <div class="progress-block accent">
+          <div class="progress-label">
+            <span>Separating Stems</span>
+            <span id="sep-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill accent" id="sep-bar"></div>
+          </div>
+          <div class="stem-stages" id="stem-stages">
+            <span class="stage" id="stage-vocals">VOCALS</span>
+            <span class="stage" id="stage-drums">DRUMS</span>
+            <span class="stage" id="stage-bass">BASS</span>
+            <span class="stage" id="stage-other">OTHER</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SPOTIFY TRACK MATCH -->
+      <section id="track-match-section" class="hidden">
+        <div class="track-match">
+          <div class="track-match-label">SPOTIFY MATCH</div>
+          <div id="track-match-info">
+            <img id="track-art" src="" alt="" />
+            <div class="track-meta">
+              <div id="track-name" class="track-name"></div>
+              <div id="track-artist" class="track-artist"></div>
+            </div>
+            <a id="track-link" href="#" target="_blank" class="track-open">OPEN ↗</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- MIXER UI -->
+      <section id="mixer-section" class="hidden">
+        <div class="now-playing">
+          <div class="np-label">NOW MIXING</div>
+          <div id="np-title" class="np-title"></div>
+        </div>
+
+        <div class="mixer-grid" id="mixer-grid">
+          <!-- Stem channels injected by JS -->
+        </div>
+
+        <!-- MASTER CONTROLS -->
+        <div class="master-controls">
+          <div class="master-time">
+            <span id="time-current">0:00</span>
+            <div class="time-bar-track">
+              <div class="time-bar-fill" id="time-bar"></div>
+            </div>
+            <span id="time-total">0:00</span>
+          </div>
+          <button id="play-btn" class="btn-play" disabled>
+            <span class="play-icon" id="play-icon">▶</span>
+            <span class="play-label" id="play-label">PLAY</span>
+          </button>
+          <div class="master-vol-row">
+            <span class="master-vol-label">MASTER</span>
+            <input type="range" id="master-vol" class="master-slider" min="0" max="1" step="0.01" value="1" />
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer>
+      <span>Runs entirely in your browser &mdash; no uploads, no server</span>
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
