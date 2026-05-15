@@ -2,138 +2,163 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <title>Stems — Browser AI Mixer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Spotify Stem Player</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- BACKGROUND GRID -->
-  <div class="bg-grid"></div>
-  <div class="scanlines"></div>
+  <div class="noise"></div>
 
   <div id="app">
 
-    <!-- HEADER -->
     <header>
       <div class="logo">
-        <div class="logo-text">Ste<span>ms</span></div>
-        <div class="logo-sub">Browser AI Mixer</div>
+        <span class="logo-main">Spotify</span>
+        <span class="logo-accent"> Stem Player</span>
       </div>
-      <div id="spotify-area">
-        <button id="spotify-btn" class="btn-spotify">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-          Connect Spotify
-        </button>
-        <div id="spotify-status" class="hidden">
-          <span class="dot-green"></span>
-          <span id="spotify-user">Connected</span>
-        </div>
-      </div>
+      <div class="header-badge">In-browser AI</div>
     </header>
 
-    <!-- MAIN CONTENT -->
-    <main>
+    <!-- UPLOAD -->
+    <section id="upload-section">
+      <div id="drop-zone">
+        <input type="file" id="file-input" accept=".mp3,.wav,.ogg,.flac,audio/*" />
+        <div class="drop-content">
+          <div class="upload-icon">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <circle cx="12" cy="12" r="3"/>
+              <line x1="12" y1="2" x2="12" y2="9"/>
+              <line x1="12" y1="15" x2="12" y2="22"/>
+              <line x1="2" y1="12" x2="9" y2="12"/>
+              <line x1="15" y1="12" x2="22" y2="12"/>
+            </svg>
+          </div>
+          <p class="upload-title">Drop a track</p>
+          <p class="upload-hint">MP3 · WAV · OGG · FLAC<br>Processed entirely in your browser</p>
+        </div>
+      </div>
+    </section>
 
-      <!-- UPLOAD ZONE -->
-      <section id="upload-section">
-        <div id="drop-zone" class="drop-zone">
-          <div class="drop-inner">
-            <div class="drop-icon">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
+    <!-- PROCESSING -->
+    <section id="processing-section" class="hidden">
+      <div class="processing-card">
+        <div class="processing-title" id="processing-label">Decoding audio…</div>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="processing-sub" id="processing-sub">Hang tight</div>
+        <div class="stem-pills">
+          <div class="pill" id="pill-vocals">Vocals</div>
+          <div class="pill" id="pill-drums">Drums</div>
+          <div class="pill" id="pill-bass">Bass</div>
+          <div class="pill" id="pill-other">Other</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MIXER -->
+    <section id="mixer-section" class="hidden">
+
+      <div class="track-header">
+        <div class="track-info">
+          <div class="track-title" id="track-title">—</div>
+        </div>
+        <button class="btn-new" id="btn-new">↩ New</button>
+      </div>
+
+      <div class="timeline-wrap">
+        <span class="time-label" id="time-cur">0:00</span>
+        <div class="timeline-bar" id="timeline-bar">
+          <div class="timeline-fill" id="timeline-fill"></div>
+        </div>
+        <span class="time-label" id="time-total">0:00</span>
+      </div>
+
+      <div class="channels" id="channels">
+
+        <div class="channel" data-stem="vocals">
+          <div class="ch-top">
+            <span class="ch-name">Vocals</span>
+            <div class="ch-btns">
+              <button class="btn-solo" data-stem="vocals">S</button>
+              <button class="btn-mute" data-stem="vocals">M</button>
             </div>
-            <p class="drop-title">Drop an MP3 here</p>
-            <p class="drop-sub">or tap to browse your files</p>
-            <input type="file" id="file-input" accept=".mp3,audio/*" />
-            <button class="btn-upload" onclick="document.getElementById('file-input').click()">Choose File</button>
+          </div>
+          <canvas class="mini-wave" id="wave-vocals" height="36"></canvas>
+          <div class="ch-bottom">
+            <div class="vu-col"><div class="vu-bar" id="vu-vocals"></div></div>
+            <input type="range" class="fader" id="fader-vocals" min="0" max="1" step="0.01" value="1" />
+            <span class="vol-pct" id="pct-vocals">100%</span>
           </div>
         </div>
-      </section>
 
-      <!-- MODEL LOAD PROGRESS -->
-      <section id="model-section" class="hidden">
-        <div class="progress-block">
-          <div class="progress-label">
-            <span>Loading AI Model</span>
-            <span id="model-pct">0%</span>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill" id="model-bar"></div>
-          </div>
-          <p class="progress-note" id="model-note">Fetching model weights... (cached after first load)</p>
-        </div>
-      </section>
-
-      <!-- SEPARATION PROGRESS -->
-      <section id="separation-section" class="hidden">
-        <div class="progress-block accent">
-          <div class="progress-label">
-            <span>Separating Stems</span>
-            <span id="sep-pct">0%</span>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill accent" id="sep-bar"></div>
-          </div>
-          <div class="stem-stages" id="stem-stages">
-            <span class="stage" id="stage-vocals">VOCALS</span>
-            <span class="stage" id="stage-drums">DRUMS</span>
-            <span class="stage" id="stage-bass">BASS</span>
-            <span class="stage" id="stage-other">OTHER</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- SPOTIFY TRACK MATCH -->
-      <section id="track-match-section" class="hidden">
-        <div class="track-match">
-          <div class="track-match-label">SPOTIFY MATCH</div>
-          <div id="track-match-info">
-            <img id="track-art" src="" alt="" />
-            <div class="track-meta">
-              <div id="track-name" class="track-name"></div>
-              <div id="track-artist" class="track-artist"></div>
+        <div class="channel" data-stem="drums">
+          <div class="ch-top">
+            <span class="ch-name">Drums</span>
+            <div class="ch-btns">
+              <button class="btn-solo" data-stem="drums">S</button>
+              <button class="btn-mute" data-stem="drums">M</button>
             </div>
-            <a id="track-link" href="#" target="_blank" class="track-open">OPEN ↗</a>
+          </div>
+          <canvas class="mini-wave" id="wave-drums" height="36"></canvas>
+          <div class="ch-bottom">
+            <div class="vu-col"><div class="vu-bar" id="vu-drums"></div></div>
+            <input type="range" class="fader" id="fader-drums" min="0" max="1" step="0.01" value="1" />
+            <span class="vol-pct" id="pct-drums">100%</span>
           </div>
         </div>
-      </section>
 
-      <!-- MIXER UI -->
-      <section id="mixer-section" class="hidden">
-        <div class="now-playing">
-          <div class="np-label">NOW MIXING</div>
-          <div id="np-title" class="np-title"></div>
-        </div>
-
-        <div class="mixer-grid" id="mixer-grid">
-          <!-- Stem channels injected by JS -->
-        </div>
-
-        <!-- MASTER CONTROLS -->
-        <div class="master-controls">
-          <div class="master-time">
-            <span id="time-current">0:00</span>
-            <div class="time-bar-track">
-              <div class="time-bar-fill" id="time-bar"></div>
+        <div class="channel" data-stem="bass">
+          <div class="ch-top">
+            <span class="ch-name">Bass</span>
+            <div class="ch-btns">
+              <button class="btn-solo" data-stem="bass">S</button>
+              <button class="btn-mute" data-stem="bass">M</button>
             </div>
-            <span id="time-total">0:00</span>
           </div>
-          <button id="play-btn" class="btn-play" disabled>
-            <span class="play-icon" id="play-icon">▶</span>
-            <span class="play-label" id="play-label">PLAY</span>
-          </button>
-          <div class="master-vol-row">
-            <span class="master-vol-label">MASTER</span>
-            <input type="range" id="master-vol" class="master-slider" min="0" max="1" step="0.01" value="1" />
+          <canvas class="mini-wave" id="wave-bass" height="36"></canvas>
+          <div class="ch-bottom">
+            <div class="vu-col"><div class="vu-bar" id="vu-bass"></div></div>
+            <input type="range" class="fader" id="fader-bass" min="0" max="1" step="0.01" value="1" />
+            <span class="vol-pct" id="pct-bass">100%</span>
           </div>
         </div>
-      </section>
 
-    </main>
+        <div class="channel" data-stem="other">
+          <div class="ch-top">
+            <span class="ch-name">Other</span>
+            <div class="ch-btns">
+              <button class="btn-solo" data-stem="other">S</button>
+              <button class="btn-mute" data-stem="other">M</button>
+            </div>
+          </div>
+          <canvas class="mini-wave" id="wave-other" height="36"></canvas>
+          <div class="ch-bottom">
+            <div class="vu-col"><div class="vu-bar" id="vu-other"></div></div>
+            <input type="range" class="fader" id="fader-other" min="0" max="1" step="0.01" value="1" />
+            <span class="vol-pct" id="pct-other">100%</span>
+          </div>
+        </div>
 
-    <footer>
-      <span>Runs entirely in your browser &mdash; no uploads, no server</span>
-    </footer>
+      </div>
+
+      <div class="transport">
+        <button class="btn-transport" id="btn-restart">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-5.01"/></svg>
+        </button>
+        <button class="btn-play" id="btn-play">
+          <svg class="icon-play" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <svg class="icon-pause hidden" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <div class="master-vol-wrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          <input type="range" id="master-vol" min="0" max="1" step="0.01" value="1" />
+        </div>
+      </div>
+
+    </section>
 
   </div>
 
