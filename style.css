@@ -1,5 +1,5 @@
-/* SEARCH STYLES */
-#search-section { padding: 40px 20px; }
+/* Fix for Search UI */
+#search-section { padding: 40px 20px; z-index: 10; position: relative; }
 .search-bar { display: flex; gap: 10px; max-width: 500px; margin: 0 auto 30px; }
 #search-input { 
   flex: 1; background: #1a1a1a; border: 2px solid #333; padding: 15px; 
@@ -7,18 +7,14 @@
 }
 #btn-search { 
   background: var(--vocals-color); border: none; padding: 0 25px; 
-  font-weight: 900; border-radius: 8px; cursor: pointer;
+  font-weight: 900; border-radius: 8px; cursor: pointer; color: black;
 }
 #search-results { 
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); 
   gap: 20px; max-width: 800px; margin: 0 auto;
 }
-.result-card { background: #161616; padding: 10px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
-.result-card:hover { transform: translateY(-5px); border: 1px solid var(--bass-color); }
+.result-card { background: #161616; padding: 10px; border-radius: 10px; cursor: pointer; transition: 0.2s; border: 1px solid #2a2a2a; }
+.result-card:hover { transform: translateY(-5px); border-color: var(--bass-color); }
 .result-card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; margin-bottom: 10px; }
 .result-card p { font-weight: bold; font-size: 0.85rem; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* REFINED MIXER */
 .hidden { display: none !important; }
-.logo-main { font-weight: 900; }
-.logo-accent { font-weight: 400; color: var(--text-dim); }
