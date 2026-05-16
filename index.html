@@ -3,45 +3,165 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Spotify Stem Player</title>
+  <title>Stem Player</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="noise"></div>
-  <div id="app">
-    <header>
-      <div class="logo">
-        <span class="logo-main">Spotify</span><span class="logo-accent"> Stem Player</span>
-      </div>
-      <div class="header-badge">In-browser AI</div>
-    </header>
 
-    <section id="search-section">
-      <div class="search-bar">
-        <input type="text" id="search-input" placeholder="Search track or artist..." />
-        <button id="btn-search">SEARCH</button>
-      </div>
-      <div id="search-results"></div>
-    </section>
+<div id="app">
 
-    <section id="loading-section" class="hidden">
-      <div class="loading-status">
-        <h2 id="loading-title">Extracting Stems...</h2>
-        <div class="progress-container"><div id="progress-bar"></div></div>
-        <p id="loading-detail">Analyzing audio frequencies...</p>
-      </div>
-    </section>
+  <!-- HEADER -->
+  <header>
+    <div class="logo">
+      <span class="logo-heavy">Stem</span><span class="logo-light">Player</span>
+    </div>
+    <div class="logo-tag">Browser AI · Jamendo</div>
+  </header>
 
-    <section id="mixer-section" class="hidden">
-      <div class="mixer-grid" id="mixer-container"></div>
-      <div class="transport">
-        <button class="btn-play" id="btn-play">
-          <svg class="icon-play" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          <svg class="icon-pause hidden" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-        </button>
+  <!-- SEARCH -->
+  <section id="search-section">
+    <div class="search-bar">
+      <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="search-input" type="search" placeholder="Search any artist or track…" autocomplete="off" spellcheck="false" />
+      <button id="search-btn">Search</button>
+    </div>
+    <div id="search-status" class="search-status hidden"></div>
+    <div id="results-grid" class="results-grid"></div>
+  </section>
+
+  <!-- PROCESSING -->
+  <section id="processing-section" class="hidden">
+    <div class="proc-card">
+      <div class="proc-track">
+        <img id="proc-art" src="" alt="" class="proc-art" />
+        <div>
+          <div class="proc-title" id="proc-title">Loading…</div>
+          <div class="proc-artist" id="proc-artist"></div>
+        </div>
       </div>
-    </section>
-  </div>
-  <script src="app.js"></script>
+      <div class="proc-label" id="proc-label">Fetching stream…</div>
+      <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
+      <div class="proc-sub" id="proc-sub">0%</div>
+      <div class="stem-pills">
+        <span class="pill" id="pill-vocals">Vocals</span>
+        <span class="pill" id="pill-drums">Drums</span>
+        <span class="pill" id="pill-bass">Bass</span>
+        <span class="pill" id="pill-other">Other</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- MIXER -->
+  <section id="mixer-section" class="hidden">
+
+    <div class="now-playing">
+      <img id="np-art" src="" alt="" class="np-art" />
+      <div class="np-meta">
+        <div class="np-title" id="np-title">—</div>
+        <div class="np-artist" id="np-artist">—</div>
+      </div>
+      <button class="btn-back" id="btn-back">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+    </div>
+
+    <!-- TIMELINE -->
+    <div class="timeline-row">
+      <span class="t-label" id="t-cur">0:00</span>
+      <div class="timeline" id="timeline">
+        <div class="tl-fill" id="tl-fill"></div>
+      </div>
+      <span class="t-label" id="t-total">0:00</span>
+    </div>
+
+    <!-- 4 STEM CHANNELS -->
+    <div class="channels">
+
+      <div class="channel" id="ch-vocals" data-stem="vocals">
+        <div class="ch-top">
+          <span class="ch-label">Vocals</span>
+          <div class="ch-actions">
+            <button class="btn-s" data-stem="vocals">S</button>
+            <button class="btn-m" data-stem="vocals">M</button>
+          </div>
+        </div>
+        <canvas id="wv-vocals" class="waveform" height="38"></canvas>
+        <div class="ch-fader-row">
+          <div class="vu-wrap"><div class="vu" id="vu-vocals"></div></div>
+          <input type="range" class="fader" id="fader-vocals" min="0" max="1" step="0.01" value="1" />
+          <span class="fader-pct" id="fpct-vocals">100</span>
+        </div>
+      </div>
+
+      <div class="channel" id="ch-drums" data-stem="drums">
+        <div class="ch-top">
+          <span class="ch-label">Drums</span>
+          <div class="ch-actions">
+            <button class="btn-s" data-stem="drums">S</button>
+            <button class="btn-m" data-stem="drums">M</button>
+          </div>
+        </div>
+        <canvas id="wv-drums" class="waveform" height="38"></canvas>
+        <div class="ch-fader-row">
+          <div class="vu-wrap"><div class="vu" id="vu-drums"></div></div>
+          <input type="range" class="fader" id="fader-drums" min="0" max="1" step="0.01" value="1" />
+          <span class="fader-pct" id="fpct-drums">100</span>
+        </div>
+      </div>
+
+      <div class="channel" id="ch-bass" data-stem="bass">
+        <div class="ch-top">
+          <span class="ch-label">Bass</span>
+          <div class="ch-actions">
+            <button class="btn-s" data-stem="bass">S</button>
+            <button class="btn-m" data-stem="bass">M</button>
+          </div>
+        </div>
+        <canvas id="wv-bass" class="waveform" height="38"></canvas>
+        <div class="ch-fader-row">
+          <div class="vu-wrap"><div class="vu" id="vu-bass"></div></div>
+          <input type="range" class="fader" id="fader-bass" min="0" max="1" step="0.01" value="1" />
+          <span class="fader-pct" id="fpct-bass">100</span>
+        </div>
+      </div>
+
+      <div class="channel" id="ch-other" data-stem="other">
+        <div class="ch-top">
+          <span class="ch-label">Other</span>
+          <div class="ch-actions">
+            <button class="btn-s" data-stem="other">S</button>
+            <button class="btn-m" data-stem="other">M</button>
+          </div>
+        </div>
+        <canvas id="wv-other" class="waveform" height="38"></canvas>
+        <div class="ch-fader-row">
+          <div class="vu-wrap"><div class="vu" id="vu-other"></div></div>
+          <input type="range" class="fader" id="fader-other" min="0" max="1" step="0.01" value="1" />
+          <span class="fader-pct" id="fpct-other">100</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TRANSPORT -->
+    <div class="transport">
+      <button class="t-btn" id="btn-restart" title="Restart">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-5"/></svg>
+      </button>
+      <button class="t-play" id="btn-play">
+        <svg class="ic-play" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        <svg class="ic-pause hidden" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      </button>
+      <div class="master-wrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        <input type="range" id="master-vol" min="0" max="1" step="0.01" value="0.85" />
+      </div>
+    </div>
+
+  </section>
+
+</div>
+
+<script src="app.js"></script>
 </body>
 </html>
