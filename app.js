@@ -1,88 +1,109 @@
 /**
  * Stem Player — app.js
- * Jamendo search → stream → in-browser stem split → 4ch mixer
+ * File upload → decode → 4-stem frequency split → Web Audio mixer
  */
 
-// ─── Jamendo API config ───────────────────────────────────────────────────────
-// Free public API key (Jamendo's demo key — get your own free at developer.jamendo.com)
-const JAMENDO_CLIENT_ID = '2a9b4dbd';  // public demo key
+'use strict';
 
-// ─── Stem definitions ─────────────────────────────────────────────────────────
+// ─── STEM CONFIG ─────────────────────────────────────────────────────────────
 const STEMS = ['vocals', 'drums', 'bass', 'other'];
 
-// Filter bank: each stem gets a chain of biquad filters applied to a copy
-// of the decoded PCM, so stems truly subtract energy from each other.
-// This is frequency-band demixing — not ML, but it produces clean, usable splits.
-const STEM_FILTERS = {
-  // Vocals: mid-band presence (cut lows + highs aggressively, boost mid)
+const COLORS = {
+  vocals: '#a78bfa',
+  drums:  '#fb923c',
+  bass:   '#22d3ee',
+  other:  '#4ade80',
+};
+
+/**
+ * Multi-stage biquad filter chains per stem.
+ * Each stem is rendered independently via OfflineAudioContext so filters
+ * never bleed into each other's render pass.
+ *
+ * Strategy:
+ *  vocals — bandpass 200-3500 Hz (human voice presence), notch out sub + air
+ *  drums  — highpass 5kHz (cymbals/snare crack) + separate sub bandpass (kick)
+ *           then we ADD those two renders together in JS
+ *  bass   — lowpass 200 Hz, boost sub shelf
+ *  other  — bandpass 400-8kHz, notch out the vocal band
+ */
+const FILTERS = {
   vocals: [
-    { type: 'highpass',  freq: 180,  Q: 0.9  },
-    { type: 'lowpass',   freq: 3800, Q: 0.9  },
-    { type: 'peaking',   freq: 1000, Q: 1.4, gain: 4 },
+    { type: 'highpass', freq: 200,  Q: 0.8 },
+    { type: 'lowpass',  freq: 3500, Q: 0.8 },
+    { type: 'peaking',  freq: 900,  Q: 1.5, gain: 3 },
+    { type: 'peaking',  freq: 2500, Q: 1.2, gain: 2 },
   ],
-  // Drums: transient-heavy highs + sub punch (hi-hat + kick)
   drums: [
-    { type: 'highpass',  freq: 4000, Q: 0.7  },
-    { type: 'peaking',   freq: 8000, Q: 1.2, gain: 5 },
-    // Also blend a sub thump
-    { type: 'bandpass',  freq: 60,   Q: 2.5  },
+    // high shelf for snap/crack
+    { type: 'highpass', freq: 4500, Q: 0.7 },
+    { type: 'peaking',  freq: 9000, Q: 1.0, gain: 4 },
   ],
-  // Bass: strict low-shelf
+  // drums also gets a kick sub path — handled specially below
   bass: [
-    { type: 'lowpass',   freq: 160,  Q: 0.8  },
-    { type: 'peaking',   freq: 80,   Q: 1.8, gain: 6 },
+    { type: 'lowpass',  freq: 200,  Q: 0.9 },
+    { type: 'peaking',  freq: 80,   Q: 2.0, gain: 5 },
+    { type: 'peaking',  freq: 40,   Q: 1.5, gain: 3 },
   ],
-  // Other: upper-mids / harmony (what's left after carving out the above)
   other: [
-    { type: 'highpass',  freq: 400,  Q: 0.7  },
-    { type: 'lowpass',   freq: 6000, Q: 0.7  },
-    { type: 'notch',     freq: 1000, Q: 1.4  },
+    { type: 'highpass', freq: 380,  Q: 0.7 },
+    { type: 'lowpass',  freq: 7000, Q: 0.7 },
+    { type: 'notch',    freq: 900,  Q: 1.5 },   // carve out vocal fundamental
   ],
 };
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// Separate kick-sub path for drums (blended after rendering)
+const KICK_FILTERS = [
+  { type: 'bandpass', freq: 65,  Q: 2.5 },
+  { type: 'peaking',  freq: 65,  Q: 2.0, gain: 8 },
+];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
 const S = {
-  audioCtx:    null,
+  ctx:         null,   // AudioContext
   masterGain:  null,
-  stemBuffers: {},   // name → AudioBuffer
-  stemNodes:   {},   // name → { source, gain, analyser }
+  stemBuffers: {},     // stem → AudioBuffer
+  stemNodes:   {},     // stem → { source, gain, analyser }
   soloedStem:  null,
   mutedStems:  new Set(),
   isPlaying:   false,
   startOffset: 0,
   startTime:   0,
   duration:    0,
-  rafId:       null,
-  vuRafId:     null,
+  rafTL:       null,
+  rafVU:       null,
 };
 
-// ─── DOM ──────────────────────────────────────────────────────────────────────
-const q  = id => document.getElementById(id);
-const searchSection     = q('search-section');
-const processingSection = q('processing-section');
-const mixerSection      = q('mixer-section');
+// ─── DOM HELPERS ─────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const $$ = sel => document.querySelectorAll(sel);
 
-// ─── AUDIO CONTEXT ────────────────────────────────────────────────────────────
+const uploadSection     = $('upload-section');
+const processingSection = $('processing-section');
+const mixerSection      = $('mixer-section');
+
+// ─── AUDIO CONTEXT ───────────────────────────────────────────────────────────
 function getCtx() {
-  if (!S.audioCtx || S.audioCtx.state === 'closed') {
-    S.audioCtx   = new (window.AudioContext || window.webkitAudioContext)();
-    S.masterGain = S.audioCtx.createGain();
-    S.masterGain.gain.value = parseFloat(q('master-vol').value);
-    S.masterGain.connect(S.audioCtx.destination);
+  if (!S.ctx || S.ctx.state === 'closed') {
+    S.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    S.masterGain = S.ctx.createGain();
+    S.masterGain.gain.value = parseFloat($('master-vol').value);
+    S.masterGain.connect(S.ctx.destination);
   }
-  return S.audioCtx;
+  return S.ctx;
 }
 
 // ─── CLEANUP ─────────────────────────────────────────────────────────────────
 function cleanup() {
-  if (S.rafId)   { cancelAnimationFrame(S.rafId);   S.rafId   = null; }
-  if (S.vuRafId) { cancelAnimationFrame(S.vuRafId); S.vuRafId = null; }
+  if (S.rafTL) { cancelAnimationFrame(S.rafTL); S.rafTL = null; }
+  if (S.rafVU) { cancelAnimationFrame(S.rafVU); S.rafVU = null; }
 
   Object.values(S.stemNodes).forEach(n => {
-    try { n.source.stop(); n.source.disconnect(); } catch(_) {}
-    try { n.gain.disconnect(); }    catch(_) {}
-    try { n.analyser.disconnect(); } catch(_) {}
+    try { n.source.stop(); } catch (_) {}
+    try { n.source.disconnect(); n.gain.disconnect(); n.analyser.disconnect(); } catch (_) {}
   });
+
+  // Null out for GC — critical on mobile
   S.stemNodes  = {};
   S.stemBuffers = {};
   S.isPlaying   = false;
@@ -91,214 +112,200 @@ function cleanup() {
   S.mutedStems  = new Set();
 }
 
-// ─── JAMENDO SEARCH ───────────────────────────────────────────────────────────
-async function searchJamendo(query) {
-  const url =
-    `https://api.jamendo.com/v3.0/tracks/?` +
-    `client_id=${JAMENDO_CLIENT_ID}` +
-    `&format=json` +
-    `&limit=20` +
-    `&search=${encodeURIComponent(query)}` +
-    `&include=musicinfo` +
-    `&audioformat=mp32` +    // 128kbps MP3 — small + fast for mobile
-    `&imagesize=200`;
+// ─── FILE INPUT — THE FIXED VERSION ──────────────────────────────────────────
+// We wire BOTH the native change event AND a manual listener on the zone div.
+// The <input> sits absolutely over the entire drop zone with opacity:0 so
+// every tap/click on the zone naturally hits the input — no JS trickery needed.
+// The dragover/drop handlers below add extra desktop DnD support.
 
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Jamendo error ${r.status}`);
-  const j = await r.json();
-  if (j.headers.status !== 'success') throw new Error(j.headers.error_message);
-  return j.results;  // array of track objects
-}
+function initUpload() {
+  const fileInput = $('file-input');
+  const dropZone  = $('drop-zone');
 
-// ─── RENDER RESULTS ───────────────────────────────────────────────────────────
-function renderResults(tracks) {
-  const grid = q('results-grid');
-  grid.innerHTML = '';
+  // Primary: native file input change event
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) handleFile(file);
+    // reset so same file can be re-selected
+    fileInput.value = '';
+  });
 
-  if (!tracks.length) {
-    grid.innerHTML = '<div class="search-status" style="display:block;padding:20px 0;text-align:center;color:var(--dim)">No results — try a different search</div>';
-    return;
-  }
-
-  tracks.forEach(track => {
-    const row = document.createElement('div');
-    row.className = 'result-row';
-    row.innerHTML = `
-      <img class="result-art" src="${track.image || ''}" alt="" loading="lazy" onerror="this.style.display='none'" />
-      <div class="result-meta">
-        <div class="result-title">${esc(track.name)}</div>
-        <div class="result-artist">${esc(track.artist_name)}</div>
-      </div>
-      <span class="result-dur">${fmtTime(track.duration)}</span>
-    `;
-    row.addEventListener('click', () => loadTrack(track));
-    grid.appendChild(row);
+  // Desktop drag-and-drop
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.add('over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.remove('over');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleFile(file);
   });
 }
 
-// ─── LOAD + SEPARATE ──────────────────────────────────────────────────────────
-async function loadTrack(track) {
-  cleanup();
-  show('processing');
-
-  // populate processing card
-  q('proc-art').src    = track.image || '';
-  q('proc-title').textContent  = track.name;
-  q('proc-artist').textContent = track.artist_name;
-
-  resetPills();
-  setProgress(0, 'Fetching stream…', '');
-
-  let arrayBuffer;
-  try {
-    // Jamendo's audio URL streams directly — no CORS issues
-    const streamUrl = track.audio;  // direct MP3 url from API
-    setProgress(5, 'Downloading audio…', '');
-
-    const res = await fetch(streamUrl);
-    if (!res.ok) throw new Error(`Stream error ${res.status}`);
-
-    // Stream with progress
-    const contentLength = res.headers.get('Content-Length');
-    const total = contentLength ? parseInt(contentLength) : 0;
-    const reader = res.body.getReader();
-    const chunks = [];
-    let loaded = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      loaded += value.length;
-      if (total) {
-        const pct = Math.min(40, 5 + Math.round((loaded / total) * 35));
-        setProgress(pct, 'Downloading audio…', `${Math.round(loaded/1024)} KB`);
-      }
-    }
-
-    // Merge chunks
-    const blob = new Blob(chunks, { type: 'audio/mpeg' });
-    arrayBuffer = await blob.arrayBuffer();
-
-  } catch (err) {
-    setProgress(0, '⚠ Could not load track', err.message);
+// ─── HANDLE FILE ─────────────────────────────────────────────────────────────
+async function handleFile(file) {
+  // Validate type loosely
+  if (!file.type.startsWith('audio/') && !/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) {
+    alert('Please choose an audio file (MP3, WAV, OGG, FLAC).');
     return;
   }
 
-  // Decode
-  setProgress(42, 'Decoding audio…', '');
+  cleanup();
+  show('processing');
+
+  const name = file.name.replace(/\.[^/.]+$/, '');  // strip extension
+  $('proc-filename').textContent = name;
+  $('mixer-title').textContent   = name;
+  resetPills();
+  setProgress(0, 'Reading file…');
+
+  // 1. Read as ArrayBuffer
+  let arrayBuffer;
+  try {
+    arrayBuffer = await readFileAsArrayBuffer(file, pct => {
+      setProgress(Math.round(pct * 20), 'Reading file…');
+    });
+  } catch (err) {
+    return showError('Could not read file: ' + err.message);
+  }
+
+  // 2. Decode audio
+  setProgress(22, 'Decoding audio…');
   let fullBuffer;
   try {
     const ctx = getCtx();
+    // decodeAudioData needs a detached copy (it consumes the buffer)
     fullBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
   } catch (err) {
-    setProgress(0, '⚠ Decode failed', err.message);
-    return;
+    return showError('Decode failed — is this a valid audio file?');
   }
 
   S.duration = fullBuffer.duration;
 
-  // Separate
-  setProgress(50, 'Separating stems…', '');
+  // 3. Separate
   try {
     await separateStems(fullBuffer);
   } catch (err) {
-    setProgress(0, '⚠ Separation failed', err.message);
-    return;
+    return showError('Stem separation error: ' + err.message);
   }
 
-  // Draw waveforms
-  STEMS.forEach(name => drawWaveform(name, S.stemBuffers[name]));
-
-  // Show mixer
-  q('np-art').src           = track.image || '';
-  q('np-title').textContent  = track.name;
-  q('np-artist').textContent = track.artist_name;
-  q('t-total').textContent   = fmtTime(S.duration);
-  q('t-cur').textContent     = '0:00';
-  q('tl-fill').style.width   = '0%';
-
-  // Reset faders + buttons
-  STEMS.forEach(name => {
-    const f = q(`fader-${name}`);
-    if (f) { f.value = '1'; }
-    q(`fpct-${name}`).textContent = '100';
-    const s = document.querySelector(`.btn-s[data-stem="${name}"]`);
-    const m = document.querySelector(`.btn-m[data-stem="${name}"]`);
-    if (s) s.classList.remove('on');
-    if (m) m.classList.remove('on');
-    document.getElementById(`ch-${name}`)?.classList.remove('muted', 'soloed');
-  });
-
-  setPlayState(false);
+  // 4. Draw waveforms (after section is visible so canvas has real width)
   show('mixer');
+  $('t-total').textContent = fmtTime(S.duration);
+  $('t-cur').textContent   = '0:00';
+  $('tl-played').style.width = '0%';
+  resetMixerControls();
+
+  // requestAnimationFrame so the DOM has rendered and canvases have width
+  requestAnimationFrame(() => {
+    STEMS.forEach(s => drawWaveform(s, S.stemBuffers[s]));
+  });
 }
 
-// ─── STEM SEPARATION (offline audio processing) ───────────────────────────────
+function readFileAsArrayBuffer(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onprogress  = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    reader.onload      = e => resolve(e.target.result);
+    reader.onerror     = () => reject(new Error('FileReader error'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// ─── STEM SEPARATION ─────────────────────────────────────────────────────────
 async function separateStems(sourceBuffer) {
-  const ctx = getCtx();
   const sr     = sourceBuffer.sampleRate;
   const frames = sourceBuffer.length;
   const nCh    = sourceBuffer.numberOfChannels;
 
   for (let i = 0; i < STEMS.length; i++) {
-    const name = STEMS[i];
-    setPillState(name, 'active');
-    setProgress(50 + i * 12, 'Separating stems…', `Processing ${name}…`);
+    const stem = STEMS[i];
+    setPill(stem, 'active');
+    setProgress(25 + i * 18, `Processing ${stem}…`);
 
-    // OfflineAudioContext renders the filtered signal at full quality
-    const offCtx = new OfflineAudioContext(nCh, frames, sr);
+    // Give browser a breath between heavy renders
+    await sleep(20);
 
-    const src = offCtx.createBufferSource();
-    src.buffer = sourceBuffer;
+    let rendered;
 
-    // Build filter chain for this stem
-    const filters = STEM_FILTERS[name];
-    let node = src;
-    for (const def of filters) {
-      const f = offCtx.createBiquadFilter();
-      f.type            = def.type;
-      f.frequency.value = def.freq;
-      f.Q.value         = def.Q || 1;
-      if (def.gain !== undefined) f.gain.value = def.gain;
-      node.connect(f);
-      node = f;
+    if (stem === 'drums') {
+      // Drums = hi-freq render + kick sub render, then mix
+      const hiRender   = await renderFiltered(sourceBuffer, FILTERS.drums,  sr, frames, nCh);
+      const kickRender = await renderFiltered(sourceBuffer, KICK_FILTERS,    sr, frames, nCh);
+      rendered = mixBuffers(hiRender, kickRender, sr, nCh, 1.0, 0.7);
+    } else {
+      rendered = await renderFiltered(sourceBuffer, FILTERS[stem], sr, frames, nCh);
     }
-    node.connect(offCtx.destination);
-    src.start(0);
 
-    // Yield to browser before heavy render
-    await sleep(30);
-    const rendered = await offCtx.startRendering();
-
-    S.stemBuffers[name] = rendered;
-    setPillState(name, 'done');
-    setProgress(50 + (i + 1) * 12, 'Separating stems…', `${name} done`);
+    S.stemBuffers[stem] = rendered;
+    setPill(stem, 'done');
   }
 
-  setProgress(100, 'Ready!', '');
-  await sleep(300);
+  setProgress(100, 'Done!');
+  await sleep(250);
+}
+
+/** Run a filter chain on sourceBuffer via OfflineAudioContext */
+async function renderFiltered(sourceBuffer, filterDefs, sr, frames, nCh) {
+  const offCtx = new OfflineAudioContext(nCh, frames, sr);
+
+  const src = offCtx.createBufferSource();
+  src.buffer = sourceBuffer;
+
+  let node = src;
+  for (const def of filterDefs) {
+    const f = offCtx.createBiquadFilter();
+    f.type            = def.type;
+    f.frequency.value = def.freq;
+    f.Q.value         = def.Q   ?? 1;
+    if (def.gain !== undefined) f.gain.value = def.gain;
+    node.connect(f);
+    node = f;
+  }
+  node.connect(offCtx.destination);
+  src.start(0);
+
+  return offCtx.startRendering();
+}
+
+/** Add two AudioBuffers sample-by-sample with individual gain */
+function mixBuffers(a, b, sr, nCh, gainA, gainB) {
+  const out = new AudioBuffer({ numberOfChannels: nCh, length: a.length, sampleRate: sr });
+  for (let c = 0; c < nCh; c++) {
+    const da  = a.getChannelData(c);
+    const db  = b.getChannelData(c);
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < dst.length; i++) {
+      dst[i] = da[i] * gainA + db[i] * gainB;
+    }
+  }
+  return out;
 }
 
 // ─── PLAYBACK ────────────────────────────────────────────────────────────────
 function startPlayback() {
   const ctx = getCtx();
-  const startAt = ctx.currentTime + 0.05;
+  const startAt = ctx.currentTime + 0.04;
   S.startTime = startAt;
 
-  STEMS.forEach(name => {
-    const buf = S.stemBuffers[name];
+  STEMS.forEach(stem => {
+    const buf = S.stemBuffers[stem];
     if (!buf) return;
 
     const source   = ctx.createBufferSource();
     source.buffer  = buf;
 
     const gain     = ctx.createGain();
-    const faderVal = parseFloat(q(`fader-${name}`).value);
-    gain.gain.value = shouldMute(name) ? 0 : faderVal;
+    const faderVal = parseFloat($(`fader-${stem}`).value);
+    gain.gain.value = isMuted(stem) ? 0 : faderVal;
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 128;
+    analyser.smoothingTimeConstant = 0.6;
 
     source.connect(gain);
     gain.connect(analyser);
@@ -307,318 +314,266 @@ function startPlayback() {
     source.start(startAt, S.startOffset);
     source.onended = () => {
       if (!S.isPlaying) return;
-      const elapsed = S.startOffset + (ctx.currentTime - S.startTime);
-      if (elapsed >= S.duration - 0.25) onEnded();
+      const pos = S.startOffset + (ctx.currentTime - S.startTime);
+      if (pos >= S.duration - 0.3) handleEnded();
     };
 
-    S.stemNodes[name] = { source, gain, analyser };
+    S.stemNodes[stem] = { source, gain, analyser };
   });
 
   S.isPlaying = true;
-  setPlayState(true);
-  tickTimeline();
-  tickVU();
+  setPlayUI(true);
+  loopTimeline();
+  loopVU();
 }
 
 function pausePlayback() {
   if (!S.isPlaying) return;
-  const ctx = S.audioCtx;
+  // Capture exact playhead position before stopping
   S.startOffset = Math.min(
-    S.startOffset + (ctx.currentTime - S.startTime),
+    S.startOffset + (S.ctx.currentTime - S.startTime),
     S.duration
   );
-  Object.values(S.stemNodes).forEach(n => {
-    try { n.source.stop(); } catch(_) {}
-  });
-  S.stemNodes  = {};
-  S.isPlaying  = false;
-  setPlayState(false);
-  if (S.rafId)   { cancelAnimationFrame(S.rafId);   S.rafId   = null; }
-  if (S.vuRafId) { cancelAnimationFrame(S.vuRafId); S.vuRafId = null; }
-  STEMS.forEach(n => { const el = q(`vu-${n}`); if (el) el.style.height = '0%'; });
+  Object.values(S.stemNodes).forEach(n => { try { n.source.stop(); } catch (_) {} });
+  S.stemNodes = {};
+  S.isPlaying = false;
+  setPlayUI(false);
+  cancelAnimationFrame(S.rafTL); S.rafTL = null;
+  cancelAnimationFrame(S.rafVU); S.rafVU = null;
+  STEMS.forEach(s => { const el = $(`vu-${s}`); if (el) el.style.height = '0%'; });
 }
 
 function restartPlayback() {
+  const wasPlaying = S.isPlaying;
   pausePlayback();
   S.startOffset = 0;
-  q('tl-fill').style.width = '0%';
-  q('t-cur').textContent   = '0:00';
+  $('tl-played').style.width = '0%';
+  $('t-cur').textContent     = '0:00';
+  if (wasPlaying) startPlayback();
 }
 
-function onEnded() {
+function handleEnded() {
   S.isPlaying   = false;
   S.startOffset = 0;
   S.stemNodes   = {};
-  setPlayState(false);
-  q('tl-fill').style.width = '0%';
-  q('t-cur').textContent   = '0:00';
-  STEMS.forEach(n => { const el = q(`vu-${n}`); if (el) el.style.height = '0%'; });
+  setPlayUI(false);
+  $('tl-played').style.width = '0%';
+  $('t-cur').textContent     = '0:00';
+  STEMS.forEach(s => { const el = $(`vu-${s}`); if (el) el.style.height = '0%'; });
 }
 
-function shouldMute(name) {
-  if (S.soloedStem && S.soloedStem !== name) return true;
-  return S.mutedStems.has(name);
+function isMuted(stem) {
+  if (S.soloedStem && S.soloedStem !== stem) return true;
+  return S.mutedStems.has(stem);
 }
 
-function setPlayState(playing) {
-  const ip = q('ic-play')  || document.querySelector('.ic-play');
-  const pause = document.querySelector('.ic-pause');
-  if (playing) {
-    ip?.classList.add('hidden');
-    pause?.classList.remove('hidden');
-  } else {
-    ip?.classList.remove('hidden');
-    pause?.classList.add('hidden');
-  }
+function applyGain(stem) {
+  const node = S.stemNodes[stem];
+  if (!node) return;
+  node.gain.gain.value = isMuted(stem) ? 0 : parseFloat($(`fader-${stem}`).value);
 }
 
-// ─── TIMELINE TICK ────────────────────────────────────────────────────────────
-function tickTimeline() {
+// ─── ANIMATION LOOPS ─────────────────────────────────────────────────────────
+function loopTimeline() {
   if (!S.isPlaying) return;
-  const ctx     = S.audioCtx;
-  const elapsed = Math.min(
-    S.startOffset + (ctx.currentTime - S.startTime),
-    S.duration
-  );
-  const pct = (elapsed / S.duration) * 100;
-  q('tl-fill').style.width  = `${pct}%`;
-  q('t-cur').textContent    = fmtTime(elapsed);
-  S.rafId = requestAnimationFrame(tickTimeline);
+  const elapsed = Math.min(S.startOffset + (S.ctx.currentTime - S.startTime), S.duration);
+  $('tl-played').style.width = `${(elapsed / S.duration) * 100}%`;
+  $('t-cur').textContent     = fmtTime(elapsed);
+  S.rafTL = requestAnimationFrame(loopTimeline);
 }
 
-// ─── VU METERS ────────────────────────────────────────────────────────────────
-function tickVU() {
+function loopVU() {
   if (!S.isPlaying) return;
-  const buf = new Uint8Array(32);
-  STEMS.forEach(name => {
-    const n  = S.stemNodes[name];
-    const el = q(`vu-${name}`);
+  const tmp = new Uint8Array(32);
+  STEMS.forEach(stem => {
+    const n  = S.stemNodes[stem];
+    const el = $(`vu-${stem}`);
     if (!n || !el) return;
-    n.analyser.getByteFrequencyData(buf);
-    const avg = buf.reduce((a,b) => a+b, 0) / buf.length;
-    const pct = Math.min(100, (avg / 96) * 120);
-    el.style.height = `${pct}%`;
+    n.analyser.getByteFrequencyData(tmp);
+    const avg = tmp.reduce((a, b) => a + b, 0) / tmp.length;
+    el.style.height = `${Math.min(100, (avg / 90) * 130)}%`;
   });
-  S.vuRafId = requestAnimationFrame(tickVU);
+  S.rafVU = requestAnimationFrame(loopVU);
 }
 
-// ─── WAVEFORM DRAWING ────────────────────────────────────────────────────────
-function drawWaveform(name, buffer) {
-  const canvas = q(`wv-${name}`);
+// ─── WAVEFORM ────────────────────────────────────────────────────────────────
+function drawWaveform(stem, buffer) {
+  const canvas = $(`wv-${stem}`);
   if (!canvas || !buffer) return;
 
-  // Resolve CSS width properly
-  canvas.width = canvas.offsetWidth || canvas.parentElement?.offsetWidth || 200;
+  const W = canvas.offsetWidth || 180;
+  canvas.width  = W;
+  canvas.height = 40;
 
-  const ctx    = canvas.getContext('2d');
-  const data   = buffer.getChannelData(0);
-  const W      = canvas.width;
-  const H      = canvas.height;
-  const step   = Math.floor(data.length / W);
-
-  // color map
-  const colorMap = {
-    vocals: '#a78bfa',
-    drums:  '#fb923c',
-    bass:   '#22d3ee',
-    other:  '#4ade80',
-  };
-  const color = colorMap[name] || '#888';
+  const ctx  = canvas.getContext('2d');
+  const data = buffer.getChannelData(0);
+  const step = Math.max(1, Math.floor(data.length / W));
+  const H    = 40;
+  const mid  = H / 2;
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+
+  // background
+  ctx.fillStyle = 'rgba(255,255,255,0.03)';
   ctx.fillRect(0, 0, W, H);
 
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = 1;
-  ctx.globalAlpha = 0.85;
+  // waveform bars
+  ctx.strokeStyle = COLORS[stem];
+  ctx.lineWidth   = 1.2;
+  ctx.globalAlpha = 0.9;
   ctx.beginPath();
 
   for (let x = 0; x < W; x++) {
-    const idx = x * step;
-    let max = 0;
-    for (let j = 0; j < step && idx+j < data.length; j++) {
-      const v = Math.abs(data[idx+j]);
-      if (v > max) max = v;
+    let peak = 0;
+    for (let j = 0; j < step; j++) {
+      const v = Math.abs(data[x * step + j] || 0);
+      if (v > peak) peak = v;
     }
-    const h = max * (H / 2) * 1.5;
-    const cy = H / 2;
-    ctx.moveTo(x, cy - h);
-    ctx.lineTo(x, cy + h);
+    const h = peak * mid * 1.6;
+    ctx.moveTo(x + 0.5, mid - h);
+    ctx.lineTo(x + 0.5, mid + h);
   }
   ctx.stroke();
 }
 
-// ─── SHOW/HIDE SECTIONS ───────────────────────────────────────────────────────
+// ─── UI HELPERS ──────────────────────────────────────────────────────────────
 function show(which) {
-  searchSection.classList.toggle('hidden',     which !== 'search');
+  uploadSection.classList.toggle('hidden',     which !== 'upload');
   processingSection.classList.toggle('hidden', which !== 'processing');
   mixerSection.classList.toggle('hidden',      which !== 'mixer');
 }
 
-// ─── PROGRESS ────────────────────────────────────────────────────────────────
-function setProgress(pct, label, sub) {
-  q('prog-fill').style.width         = `${pct}%`;
-  q('proc-label').textContent        = label;
-  q('proc-sub').textContent          = sub || '';
+function setPlayUI(playing) {
+  document.querySelector('.ic-play') ?.classList.toggle('hidden',  playing);
+  document.querySelector('.ic-pause')?.classList.toggle('hidden', !playing);
+}
+
+function setProgress(pct, label) {
+  $('prog-fill').style.width  = `${pct}%`;
+  $('proc-stage').textContent = label || '';
+  $('proc-pct').textContent   = `${Math.round(pct)}%`;
 }
 
 function resetPills() {
-  STEMS.forEach(n => {
-    const p = q(`pill-${n}`);
-    if (p) p.className = 'pill';
+  STEMS.forEach(s => { const p = $(`pill-${s}`); if (p) p.className = 'pill'; });
+}
+function setPill(stem, state) {
+  const p = $(`pill-${stem}`); if (p) p.className = `pill ${state}`;
+}
+
+function resetMixerControls() {
+  STEMS.forEach(stem => {
+    const f = $(`fader-${stem}`);
+    if (f) f.value = '1';
+    const v = $(`fv-${stem}`);
+    if (v) v.textContent = '100';
+    $$('.btn-s, .btn-m').forEach(b => b.classList.remove('on'));
+    $(`ch-${stem}`)?.classList.remove('muted', 'soloed');
   });
 }
 
-function setPillState(name, state) {
-  const p = q(`pill-${name}`);
-  if (!p) return;
-  p.className = `pill ${state}`;
+function showError(msg) {
+  $('proc-stage').textContent = '⚠ ' + msg;
+  $('proc-pct').textContent   = '';
+  $('prog-fill').style.background = '#ef4444';
 }
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
-function fmtTime(s) {
-  s = Math.max(0, Math.floor(s));
-  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
-}
+const fmtTime = s => {
+  s = Math.max(0, Math.floor(s || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function esc(str) {
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ─── EVENT WIRING ─────────────────────────────────────────────────────────────
-
-// Search
-q('search-btn').addEventListener('click', doSearch);
-q('search-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doSearch();
-});
-
-async function doSearch() {
-  const val = q('search-input').value.trim();
-  if (!val) return;
-  const status = q('search-status');
-  const grid   = q('results-grid');
-  status.textContent = 'Searching…';
-  status.classList.remove('hidden');
-  grid.innerHTML = '';
-  try {
-    const tracks = await searchJamendo(val);
-    status.classList.add('hidden');
-    renderResults(tracks);
-  } catch (err) {
-    status.textContent = `⚠ ${err.message}`;
-  }
-}
+// ─── EVENT WIRING ────────────────────────────────────────────────────────────
+initUpload();
 
 // Play / Pause
-q('btn-play').addEventListener('click', async () => {
+$('btn-play').addEventListener('click', async () => {
   const ctx = getCtx();
   if (ctx.state === 'suspended') await ctx.resume();
   if (S.isPlaying) {
     pausePlayback();
-  } else if (Object.keys(S.stemBuffers).length) {
+  } else if (Object.keys(S.stemBuffers).length > 0) {
     startPlayback();
   }
 });
 
 // Restart
-q('btn-restart').addEventListener('click', () => {
-  restartPlayback();
-});
+$('btn-restart').addEventListener('click', restartPlayback);
 
-// Back to search
-q('btn-back').addEventListener('click', () => {
+// Load new track
+$('btn-eject').addEventListener('click', () => {
   pausePlayback();
   cleanup();
-  show('search');
+  show('upload');
 });
 
 // Master volume
-q('master-vol').addEventListener('input', () => {
-  if (S.masterGain) S.masterGain.gain.value = parseFloat(q('master-vol').value);
+$('master-vol').addEventListener('input', () => {
+  if (S.masterGain) S.masterGain.gain.value = parseFloat($('master-vol').value);
 });
 
-// Faders
-STEMS.forEach(name => {
-  const fader = q(`fader-${name}`);
-  if (!fader) return;
-  fader.addEventListener('input', () => {
-    const val = parseFloat(fader.value);
-    q(`fpct-${name}`).textContent = Math.round(val * 100);
-    const node = S.stemNodes[name];
-    if (node && !shouldMute(name)) node.gain.gain.value = val;
+// Per-stem faders
+STEMS.forEach(stem => {
+  $(`fader-${stem}`)?.addEventListener('input', function () {
+    const val = parseFloat(this.value);
+    $(`fv-${stem}`).textContent = Math.round(val * 100);
+    applyGain(stem);
   });
 });
 
-// Solo buttons
-document.querySelectorAll('.btn-s').forEach(btn => {
+// Solo
+$$('.btn-s').forEach(btn => {
   btn.addEventListener('click', () => {
-    const name = btn.dataset.stem;
-    if (S.soloedStem === name) {
-      // Un-solo
+    const stem = btn.dataset.stem;
+    if (S.soloedStem === stem) {
       S.soloedStem = null;
-      document.querySelectorAll('.btn-s').forEach(b => b.classList.remove('on'));
-      STEMS.forEach(n => {
-        document.getElementById(`ch-${n}`)?.classList.remove('soloed');
-        applyGain(n);
-      });
+      $$('.btn-s').forEach(b => b.classList.remove('on'));
+      STEMS.forEach(s => { $(`ch-${s}`)?.classList.remove('soloed'); applyGain(s); });
     } else {
-      S.soloedStem = name;
-      document.querySelectorAll('.btn-s').forEach(b => {
-        b.classList.toggle('on', b.dataset.stem === name);
-      });
-      STEMS.forEach(n => {
-        document.getElementById(`ch-${n}`)?.classList.toggle('soloed', n === name);
-        applyGain(n);
-      });
+      S.soloedStem = stem;
+      $$('.btn-s').forEach(b => b.classList.toggle('on', b.dataset.stem === stem));
+      STEMS.forEach(s => { $(`ch-${s}`)?.classList.toggle('soloed', s === stem); applyGain(s); });
     }
   });
 });
 
-// Mute buttons
-document.querySelectorAll('.btn-m').forEach(btn => {
+// Mute
+$$('.btn-m').forEach(btn => {
   btn.addEventListener('click', () => {
-    const name = btn.dataset.stem;
-    const isMuted = S.mutedStems.has(name);
-    if (isMuted) {
-      S.mutedStems.delete(name);
+    const stem = btn.dataset.stem;
+    if (S.mutedStems.has(stem)) {
+      S.mutedStems.delete(stem);
       btn.classList.remove('on');
-      document.getElementById(`ch-${name}`)?.classList.remove('muted');
+      $(`ch-${stem}`)?.classList.remove('muted');
     } else {
-      S.mutedStems.add(name);
+      S.mutedStems.add(stem);
       btn.classList.add('on');
-      document.getElementById(`ch-${name}`)?.classList.add('muted');
+      $(`ch-${stem}`)?.classList.add('muted');
     }
-    applyGain(name);
+    applyGain(stem);
   });
 });
 
-function applyGain(name) {
-  const node = S.stemNodes[name];
-  if (!node) return;
-  const fval = parseFloat(q(`fader-${name}`).value);
-  node.gain.gain.value = shouldMute(name) ? 0 : fval;
-}
-
-// Timeline scrub
-q('timeline').addEventListener('click', e => {
+// Timeline scrub (click + touch)
+function scrub(e) {
   if (!S.duration) return;
-  const rect = q('timeline').getBoundingClientRect();
-  const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  const wasPlaying = S.isPlaying;
+  const bar    = $('timeline');
+  const rect   = bar.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const pct    = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  const was    = S.isPlaying;
   pausePlayback();
   S.startOffset = pct * S.duration;
-  q('tl-fill').style.width = `${pct * 100}%`;
-  q('t-cur').textContent   = fmtTime(S.startOffset);
-  if (wasPlaying) startPlayback();
-});
+  $('tl-played').style.width = `${pct * 100}%`;
+  $('t-cur').textContent     = fmtTime(S.startOffset);
+  if (was) startPlayback();
+}
+$('timeline').addEventListener('click',      scrub);
+$('timeline').addEventListener('touchstart', scrub, { passive: true });
 
-// Resume AudioContext on any tap (iOS requirement)
+// iOS AudioContext resume
 document.addEventListener('touchstart', () => {
-  if (S.audioCtx?.state === 'suspended') S.audioCtx.resume();
+  if (S.ctx?.state === 'suspended') S.ctx.resume();
 }, { passive: true });
